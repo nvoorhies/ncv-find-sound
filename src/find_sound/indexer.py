@@ -28,6 +28,7 @@ from .audio import ANALYSIS_REVISION, analyze_file, hash_file, init_worker
 from .config import Config
 from .describe import KIND_PROMPTS, classify_audio, describe, kind_from_path, kind_rules_version
 from .embed_client import EmbeddingClient, EmbeddingError, normalize
+from .server_control import ServerUnavailable, ensure_running
 from .store import IndexLock, Store, audio_key, text_key
 
 log = logging.getLogger("find_sound")
@@ -162,6 +163,8 @@ class Indexer:
                 log.warning("sync stopped, embedding endpoint unavailable: %s", e)
             except Exception:
                 log.exception("sync failed")
+            # Between scans, hold no analysis processes: an idle watcher should cost nothing.
+            self.close()
             waits = [asyncio.create_task(stop.wait()), asyncio.create_task(wake.wait())]
             await asyncio.wait(waits, timeout=interval, return_when=asyncio.FIRST_COMPLETED)
             for t in waits:
@@ -215,6 +218,8 @@ class Indexer:
             todo = todo[:limit]
         report.queued = len(todo)
         self._kinds_changed = False
+        if todo:
+            await self._ensure_server()
         if todo or self.store.get_meta("kind_rules") != kind_rules_version():
             self._labels = await self._kind_label_vectors()
             self._reclassify_if_rules_changed()
@@ -246,6 +251,14 @@ class Indexer:
             self.store.commit()
             self._finish(report)
         return report
+
+    async def _ensure_server(self) -> None:
+        """There is work: make sure the embedding server is up (started on demand)."""
+        try:
+            await ensure_running(self.cfg, on_start=lambda url, pid: log.info(
+                "started the embedding server for %s (pid %d) to embed new files", url, pid))
+        except ServerUnavailable as e:
+            raise EndpointDown(str(e)) from None
 
     def _finish(self, report: SyncReport) -> None:
         report.seconds = time.time() - report.started

@@ -25,7 +25,7 @@ cp find-sound.example.toml ~/.config/find-sound/config.toml    # edit `library`
 bin/find-sound doctor --fix     # starts the bundled embedding server (CLAP + Qwen3-Embedding-4B, ~9 GB VRAM;
                                 # downloads ~8.5 GB of weights once) and indexes the library
 bin/find-sound search "laser zap" -l
-bin/find-sound serve            # http://127.0.0.1:8765, keeps indexing in the background
+bin/find-sound service install  # keep the index fresh from now on (systemd user service; see below)
 ```
 
 `bin/find-sound` runs the CLI from this checkout's uv environment from any directory, including
@@ -41,6 +41,7 @@ and skip the extra.
 | `watch [--interval S]` | `index` every `scan_interval` seconds (default 300) |
 | `search QUERY [-k 5] [--json \| -l] [--kind] [--bpm] [--dur] [--in] [--copy-to DIR]` | best matches, one path per line by default |
 | `serve [--port 8765] [--no-index]` | web UI + JSON API + background indexing |
+| `service install\|uninstall\|status` | run `serve` as a systemd user service: rescans every `scan_interval`, web UI always up, survives reboots |
 | `doctor [--fix]` | checks config, library, both endpoints (text and a real audio clip) and the index; `--fix` starts the bundled server for local endpoints and updates the index |
 | `eval CASES.toml [--weights ...] [-v]` | precision@5 / MRR@10 on queries with known answers, across audio/text weightings |
 | `stats` / `config` | index size, kinds, errors, last sync / effective settings |
@@ -105,6 +106,30 @@ names, so the eval leans toward the name channel. The default of 0.4, rather tha
 0.2-0.3, keeps well-sounding but badly named files findable. Swapping models is cheap: vectors
 are cached per model, and only descriptions are re-embedded (4k of them in ~9 s).
 
+## Keeping the index fresh
+
+```bash
+bin/find-sound service install      # once; `service status` / `service uninstall` later
+```
+
+This writes `~/.config/systemd/user/find-sound.service`, which runs `find-sound serve`: the web UI
+on :8765 plus a rescan every `scan_interval` seconds (5 min). New, changed, renamed and deleted
+files are picked up on the next pass. A pass that finds nothing costs one directory walk (about
+0.5 s for 10k files) and no GPU. Files still being copied (modified in the last
+`settle_seconds`) wait for the following pass. The service runs at low CPU and I/O priority.
+With `loginctl enable-linger` it starts at boot, without a login.
+
+The embedding server is not kept running. With `autostart_server` (on by default), whatever
+needs it starts it when a local endpoint is down: a scan that found new files, a CLI search, a
+web search, `doctor --fix`. It exits after `server_idle_timeout` seconds without requests (15
+min), handing its ~9 GB of VRAM back to other jobs. A file lock lets exactly one process start
+it when several need it at once. The first search after it has gone to sleep takes about 20 s
+while the models load. Set `server_idle_timeout = 0` to keep it resident once started, or
+`autostart_server = false` to manage it yourself (e.g. an Infinity server elsewhere).
+
+Without the service, `find-sound watch` does the same scanning in the foreground, and
+`find-sound index` does a single pass.
+
 ## Indexing
 
 ```
@@ -116,7 +141,8 @@ scan -> hash (threads) -> decode, analyse, cut segments (process pool) -> embed 
   duplicated files are never re-embedded. Switching models re-embeds, but the old vectors stay
   cached, so switching back is free.
 - **Incremental.** An unchanged file (same size and mtime) costs one `stat`. `watch`/`serve`
-  rescan every `scan_interval` seconds; the web UI's *rescan* link starts a rescan straight away.
+  (and so the service) rescan every `scan_interval` seconds; the web UI's *rescan* link starts a
+  rescan straight away.
   Files modified within `settle_seconds` are probably still being copied, so they wait for the
   next scan.
 - **Kinds** come from folder names where they say (`Music Pack`, `VO`, `Ambience`, UCS `AMB`/`VOX`),

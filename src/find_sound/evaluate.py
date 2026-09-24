@@ -24,6 +24,7 @@ import numpy as np
 from .config import Config
 from .indexer import close_clients, open_clients
 from .search import SearchIndex, embed_query, parse_query
+from .server_control import ensure_running
 from .store import Store
 
 DEFAULT_WEIGHTS = (1.0, 0.8, 0.65, 0.5, 0.35, 0.2, 0.0)
@@ -56,6 +57,7 @@ async def evaluate(cfg: Config, cases: list[Case], weights=DEFAULT_WEIGHTS, k: i
     store.close()
     if not len(index):
         raise ValueError(f"the index at {cfg.index_path} has no vectors for the configured models; run `find-sound index`")
+    await ensure_running(cfg)
     audio, text = open_clients(cfg)
     try:
         per_case = []

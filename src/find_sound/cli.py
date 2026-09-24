@@ -16,6 +16,7 @@ from .config import Config, load_config
 from .embed_client import EmbeddingError
 from .indexer import EndpointDown, IndexBusy, Indexer, SyncReport, close_clients, open_clients
 from .search import Filters, SearchIndex, parse_kinds, parse_range, results_json, run_search
+from .server_control import ServerUnavailable, ensure_running
 from .store import Store
 
 log = logging.getLogger("find_sound")
@@ -85,6 +86,12 @@ async def _search(cfg: Config, args) -> int:
     search_cfg = cfg.search
     if args.audio_weight is not None:
         search_cfg = replace(search_cfg, audio_weight=args.audio_weight, text_weight=1 - args.audio_weight)
+    try:
+        await ensure_running(cfg, on_start=lambda url, pid: print(
+            f"starting the embedding server for {url} (pid {pid}); first search takes ~20 s", file=sys.stderr))
+    except ServerUnavailable as e:
+        print(f"find-sound: {e}", file=sys.stderr)
+        return 2
     audio, text = open_clients(cfg)
     try:
         query = " ".join(args.query)
@@ -185,6 +192,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--no-index", action="store_true", help="search only; don't scan or embed")
 
+    p = sub.add_parser("service", help="run `serve` as a systemd user service (periodic indexing + web UI, survives reboots)")
+    p.add_argument("action", choices=["install", "uninstall", "status"])
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8765)
+
     p = sub.add_parser("stats", help="index size, kinds, errors, last sync")
     p.add_argument("--json", action="store_true")
 
@@ -223,6 +235,11 @@ def main(argv: list[str] | None = None) -> None:
                         log_level="warning")
         elif args.cmd == "stats":
             _stats(cfg, args.json)
+        elif args.cmd == "service":
+            from . import service
+
+            sys.exit({"install": lambda: service.install(cfg, args.host, args.port),
+                      "uninstall": service.uninstall, "status": service.status}[args.action]())
         elif args.cmd == "doctor":
             from .doctor import run as doctor
 

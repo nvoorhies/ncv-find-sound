@@ -13,6 +13,12 @@ scan_interval = 300
 # Files modified more recently than this are left for the next scan (they may still be copying).
 settle_seconds = 2.0
 
+# Start the bundled embedding server when a local endpoint is down and something needs it (new
+# files to embed, a search), and let it exit after this many idle seconds to free the GPU.
+# server_idle_timeout = 0 keeps it running once started.
+autostart_server = true
+server_idle_timeout = 900
+
 # Decoding/analysis processes; 0 = min(8, cpu count).
 analysis_workers = 0
 

@@ -36,8 +36,9 @@ generic advice below.
 | `doctor [--fix]` | checks config, library, both embedding models (text + a real audio clip), index; `--fix` starts the embedding server and updates the index | seconds; ~20 s to load the models the first time |
 | `search "query" [-k N] [--json\|-l] [--kind K] [--dur R] [--bpm R] [--in S]` | best matches, one path per line by default | ~1 s |
 | `search ... --copy-to DIR [--with-variants] --json` | same, and copies the results (and their takes) into DIR | ~1 s |
-| `index` | picks up files added to the library since the last scan | seconds; ~25 new files/s |
+| `index` | picks up files added to the library since the last scan (the service does this every 5 min) | seconds; ~15-25 new files/s |
 | `serve` | web page with players at http://127.0.0.1:8765 (for the user to listen) | runs until stopped |
+| `service status` | whether the background service (periodic rescans + web UI) is installed and running | instant |
 
 Filters also work inside the query string: `dur:<1`, `dur:1-3`, `bpm:120`, `bpm:110-130`,
 `kind:sfx`, `kind:music,ambience`, `in:foley` (the path contains this).
@@ -79,6 +80,12 @@ Filters also work inside the query string: `dur:<1`, `dur:1-3`, `bpm:120`, `bpm:
    if the index is stale. If it fails with CUDA out of memory, another GPU job holds the card;
    tell the user rather than killing it.
 
+   Without `--fix`, a server reported as `[..] asleep, starts on demand` is fine. It exits
+   after 15 idle minutes to free the GPU, and the next search starts it again, which makes
+   that search take ~20 s longer. When `$FS service status` shows the service running, new
+   sounds are indexed within 5 minutes of landing in the library, and the web UI is always
+   up.
+
 2. **Write the query: what it sounds like, plus what it is**
 
    The audio model responds to acoustic words (bright, metallic, deep, short, reverberant,
@@ -118,6 +125,8 @@ Filters also work inside the query string: `dur:<1`, `dur:1-3`, `bpm:120`, `bpm:
    curl -sf http://127.0.0.1:8765/api/status >/dev/null || (nohup $FS serve >/dev/null 2>&1 &)
    ```
 
+   (With the service installed, it's already running.)
+
    Then give them `http://127.0.0.1:8765/?q=<url-encoded query>`. The page plays every result
    and its variants.
 
@@ -151,8 +160,8 @@ Filters also work inside the query string: `dur:<1`, `dur:1-3`, `bpm:120`, `bpm:
   `~/.cache/find-sound/embed-server.log`. `address already in use` means another server owns
   port 7997. Check that `curl -s localhost:7997/health` lists both models.
 - Search prints `the index ... is empty`: run `$FS doctor --fix` (or `$FS index`).
-- A pack was just added to the library: run `$FS index`. It is incremental, and files still
-  being copied are left for the next run.
+- A pack was just added to the library: the service picks it up within 5 minutes; `$FS index`
+  does it now. Files still being copied are left for the next run.
 - `another indexer (pid N) is updating`: a `serve` or `watch` process is indexing. Searches
   still work; results fill in as it goes.
 - Tuning: `$FS eval <checkout>/evals/game-audio.toml` measures precision on

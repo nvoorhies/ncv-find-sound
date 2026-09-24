@@ -26,6 +26,7 @@ from .config import Config
 from .embed_client import EmbeddingError
 from .indexer import Indexer, close_clients, open_clients
 from .search import Filters, SearchIndex, parse_kinds, parse_range, run_search
+from .server_control import ServerUnavailable, endpoints, ensure_running, is_local, port_open
 from .store import Store
 
 # Reload the in-memory matrix at most this often while an indexer is writing.
@@ -113,6 +114,7 @@ def create_app(cfg: Config, background_index: bool = True, transport=None) -> Fa
                 duration=parse_range(dur) if dur else None,
             )
             index = await asyncio.to_thread(state.current_index)
+            await ensure_running(cfg)  # wakes the embedding server if it idled out (~20 s)
             t = time.perf_counter()
             results, filters = await run_search(
                 index, state.audio, state.text, q, cfg.search, k=min(k or cfg.search.k, 50), extra=extra,
@@ -122,6 +124,8 @@ def create_app(cfg: Config, background_index: bool = True, transport=None) -> Fa
             raise HTTPException(400, str(e)) from e
         except EmbeddingError as e:
             raise HTTPException(502, f"embedding endpoint: {e}") from e
+        except ServerUnavailable as e:
+            raise HTTPException(503, str(e)) from e
 
         def file_ref(path: str) -> dict:
             fid = index.id_by_path.get(path)
@@ -167,6 +171,10 @@ def create_app(cfg: Config, background_index: bool = True, transport=None) -> Fa
             "model": cfg.embedding.model,
             "indexing": progress is not None,
             "progress": progress,
+            # "asleep": a local server that exited when idle; the next search starts it.
+            "embedding_server": "running" if all(
+                port_open(ep.base_url) for _, ep, _ in endpoints(cfg) if is_local(ep.base_url)
+            ) else ("asleep" if cfg.autostart_server else "down"),
         }
 
     @app.post("/api/rescan", status_code=202)

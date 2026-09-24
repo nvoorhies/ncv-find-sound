@@ -91,6 +91,11 @@ class Config:
     scan_interval: float = 300.0
     # Files modified more recently than this are skipped until the next scan (still copying).
     settle_seconds: float = 2.0
+    # Start the bundled embedding server when a local endpoint is down and there is work for
+    # it (new files to embed, a query), and let it exit after this many idle seconds so the
+    # GPU memory goes back to other jobs. 0 = keep it running once started.
+    autostart_server: bool = True
+    server_idle_timeout: float = 900.0
     # Processes for decoding / analysis (BPM etc.). 0 = min(8, cpu count).
     analysis_workers: int = 0
     # Only estimate BPM for clips at least this long; short one-shots have no tempo.

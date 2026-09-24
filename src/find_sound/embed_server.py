@@ -125,8 +125,40 @@ def _normalize(v: np.ndarray) -> np.ndarray:
     return v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
 
 
-def create_app(embedders: dict[str, object]) -> FastAPI:
+class Activity:
+    """Requests in flight and when the last one finished, for the idle watchdog."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.in_flight = 0
+        self.last = time.monotonic()
+
+    def begin(self) -> None:
+        with self._lock:
+            self.in_flight += 1
+
+    def end(self) -> None:
+        with self._lock:
+            self.in_flight -= 1
+            self.last = time.monotonic()
+
+    def idle_for(self) -> float:
+        with self._lock:
+            return 0.0 if self.in_flight else time.monotonic() - self.last
+
+
+def watch_idle(activity: Activity, server, timeout: float, poll: float = 10.0) -> None:
+    """Ask the server to exit once nothing has been requested for `timeout` seconds."""
+    while not getattr(server, "should_exit", False):
+        time.sleep(min(poll, timeout))
+        if activity.idle_for() >= timeout:
+            log.info("idle for %.0f s; exiting to free the GPU", activity.idle_for())
+            server.should_exit = True
+
+
+def create_app(embedders: dict[str, object], activity: Activity | None = None) -> FastAPI:
     """`embedders` maps the served model name to a ClapEmbedder / DecoderTextEmbedder."""
+    activity = activity or Activity()
     app = FastAPI(title="find-sound embedding server")
     default = next(iter(embedders))
 
@@ -200,6 +232,7 @@ def create_app(embedders: dict[str, object]) -> FastAPI:
     @app.post("/v1/embeddings")
     def embeddings(body: dict):
         t = time.perf_counter()
+        activity.begin()
         try:
             return embed(body)
         except HTTPException:
@@ -207,6 +240,7 @@ def create_app(embedders: dict[str, object]) -> FastAPI:
         except (sf.LibsndfileError, ValueError, KeyError, TypeError) as e:
             raise HTTPException(400, f"{type(e).__name__}: {e}") from e
         finally:
+            activity.end()
             log.debug("embeddings request in %.1f ms", (time.perf_counter() - t) * 1000)
 
     @app.get("/models")
@@ -233,6 +267,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7997)
     ap.add_argument("--device", default="auto", help="cuda, cpu or auto")
+    ap.add_argument("--idle-timeout", type=float, default=0,
+                    help="exit after this many seconds without requests, freeing the GPU (0 = never)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -247,8 +283,14 @@ def main(argv: list[str] | None = None) -> None:
         embedders[m] = DecoderTextEmbedder(m, args.device)
     if not embedders:
         ap.error("nothing to serve")
-    log.info("serving %s on %s:%d", ", ".join(embedders), args.host, args.port)
-    uvicorn.run(create_app(embedders), host=args.host, port=args.port, log_level="warning")
+    activity = Activity()
+    server = uvicorn.Server(uvicorn.Config(create_app(embedders, activity), host=args.host, port=args.port,
+                                           log_level="warning"))
+    if args.idle_timeout > 0:
+        threading.Thread(target=watch_idle, args=(activity, server, args.idle_timeout), daemon=True).start()
+    log.info("serving %s on %s:%d%s", ", ".join(embedders), args.host, args.port,
+             f", exiting after {args.idle_timeout:.0f} s idle" if args.idle_timeout > 0 else "")
+    server.run()
 
 
 if __name__ == "__main__":
