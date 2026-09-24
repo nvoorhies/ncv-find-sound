@@ -3,6 +3,7 @@ import shutil
 import time
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from conftest import tone
@@ -134,3 +135,35 @@ async def test_files_still_being_written_wait_for_the_next_scan(make_indexer, cf
     tone(library / "UI" / "Beep High.wav", 1500)            # being overwritten
     report = await ix.sync()
     assert report.done == 0 and report.removed == 0         # neither indexed nor dropped yet
+
+
+async def test_improved_analysis_reruns_without_reembedding(make_indexer):
+    ix = make_indexer()
+    await ix.sync()
+    ix.store.db.execute("UPDATE content SET analysis_rev = 1")  # as if analysed by an older version
+    ix.store.commit()
+    report = await ix.sync()
+    assert report.done == 1  # only the 8 s drone is long enough for tempo analysis
+    assert report.audio_embedded == 0
+    assert ix.store.db.execute("SELECT MIN(analysis_rev) FROM content").fetchone()[0] >= 2
+
+
+async def test_analysis_values_are_stored_as_numbers(make_indexer):
+    ix = make_indexer()
+    await ix.sync()
+    types = {r[0] for r in ix.store.db.execute(
+        "SELECT DISTINCT typeof(duration) FROM content UNION SELECT DISTINCT typeof(bpm) FROM content "
+        "UNION SELECT DISTINCT typeof(bpm_confidence) FROM content UNION SELECT DISTINCT typeof(rms_db) FROM content")}
+    assert types <= {"real", "integer", "null"}
+
+
+def test_numpy_scalars_are_not_stored_as_blobs(tmp_path):
+    from find_sound.audio import Analysis
+    from find_sound.store import Store
+
+    s = Store(tmp_path / "i.sqlite")
+    a = Analysis(duration=np.float64(2.0), sample_rate=48000, channels=2, rms_db=np.float32(-20.5),
+                 peak_db=-3.0, bpm=np.float32(128.4), bpm_confidence=np.float32(0.5))
+    s.put_content("h", a)
+    row = s.db.execute("SELECT typeof(bpm), typeof(rms_db), typeof(duration), bpm FROM content").fetchone()
+    assert tuple(row)[:3] == ("real", "real", "real") and abs(row[3] - 128.4) < 1e-3

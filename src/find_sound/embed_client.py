@@ -29,8 +29,9 @@ def normalize(v: np.ndarray) -> np.ndarray:
 
 
 class EmbeddingClient:
-    def __init__(self, ep: EndpointConfig, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, ep: EndpointConfig, transport: httpx.AsyncBaseTransport | None = None, attempts: int = 4):
         self.ep = ep
+        self.attempts = attempts
         headers = {"Authorization": f"Bearer {ep.api_key}"} if ep.api_key else {}
         self._http = httpx.AsyncClient(timeout=ep.timeout, headers=headers, transport=transport)
         self._sem = asyncio.Semaphore(ep.concurrency)
@@ -51,8 +52,10 @@ class EmbeddingClient:
 
     async def _post(self, body: dict, expect: int) -> np.ndarray:
         body = {"model": self.ep.model, "encoding_format": "float", **body}
+        if self.ep.dimensions:
+            body["dimensions"] = self.ep.dimensions
         delay = RETRY_DELAY
-        for attempt in range(4):
+        for attempt in range(self.attempts):
             try:
                 async with self._sem:
                     self.requests += 1
@@ -62,7 +65,7 @@ class EmbeddingClient:
                 err = f"HTTP {r.status_code}: {r.text[:300]}"
             except httpx.TransportError as e:
                 err = f"{type(e).__name__}: {e}"
-            if attempt == 3:
+            if attempt == self.attempts - 1:
                 raise EmbeddingError(f"{self.url}: {err}")
             await asyncio.sleep(delay)
             delay *= 2

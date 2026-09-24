@@ -20,6 +20,12 @@ import soxr
 
 BPM_SAMPLE_RATE = 22050
 BPM_WINDOW_SECONDS = 60.0
+BPM_HOP = 512  # librosa's default, which its tempo prior (octave choice) is tuned for
+BPM_FINE_HOP = 128
+# Bump when analysis results change; the indexer re-analyses older content (no re-embedding).
+# 3: tempo refined on a 128-sample hop with parabolic peak interpolation. At hop 512 integer
+#    lags only allow ...136, 143.6, 152... near 140 BPM; now within ~0.5 BPM on synthetic beats.
+ANALYSIS_REVISION = 3
 
 
 def hash_file(path: str | Path, chunk: int = 1 << 20) -> str:
@@ -117,21 +123,46 @@ def estimate_bpm(x: np.ndarray, sr: int) -> tuple[float, float] | None:
 
 def _estimate_bpm(librosa, x: np.ndarray, sr: int) -> tuple[float, float] | None:
     y = resample(x, sr, BPM_SAMPLE_RATE)
-    hop = 512
-    env = librosa.onset.onset_strength(y=y, sr=BPM_SAMPLE_RATE, hop_length=hop)
+    # librosa picks the tempo (and so the octave) on its default grid...
+    env = librosa.onset.onset_strength(y=y, sr=BPM_SAMPLE_RATE, hop_length=BPM_HOP)
     if env.size < 16 or not np.any(env):
         return None
-    tempo = float(np.atleast_1d(librosa.feature.tempo(onset_envelope=env, sr=BPM_SAMPLE_RATE, hop_length=hop))[0])
+    tempo = float(np.atleast_1d(librosa.feature.tempo(onset_envelope=env, sr=BPM_SAMPLE_RATE, hop_length=BPM_HOP))[0])
     if not 30 <= tempo <= 300:
         return None
-    ac = librosa.autocorrelate(env - env.mean())
+    # ...then the beat period is refined on a finer onset envelope: the autocorrelation peak
+    # near that lag, interpolated with a parabola through its neighbours.
+    fine = librosa.onset.onset_strength(y=y, sr=BPM_SAMPLE_RATE, hop_length=BPM_FINE_HOP)
+    ac = librosa.autocorrelate(fine - fine.mean())
     if ac[0] <= 0:
         return None
     ac = ac / ac[0]
-    lag = 60.0 * BPM_SAMPLE_RATE / hop / tempo
-    lo, hi = int(lag) - 1, int(lag) + 2
-    clarity = float(np.clip(ac[max(1, lo) : hi].max(initial=0.0), 0.0, 1.0)) if lo < len(ac) else 0.0
-    return round(tempo, 1), round(clarity, 3)
+    frames_per_minute = 60.0 * BPM_SAMPLE_RATE / BPM_FINE_HOP
+    i = int(round(frames_per_minute / tempo))
+    lo, hi = max(1, i - 3), min(len(ac) - 2, i + 3)
+    if lo >= hi:
+        return None
+    i = lo + int(np.argmax(ac[lo : hi + 1]))
+    a, b, c = (float(v) for v in ac[i - 1 : i + 2])
+    denom = a - 2 * b + c
+    lag = i + (0.5 * (a - c) / denom if denom < 0 else 0.0)
+    # Pulse clarity: how strongly the onsets repeat at the beat period.
+    return round(frames_per_minute / lag, 1), round(min(max(b, 0.0), 1.0), 3)
+
+
+def init_worker() -> None:
+    """Process-pool initializer: one thread per analysis process. Eight processes that each
+    spin up a full BLAS/numba thread pool spend more time in the kernel than computing."""
+    import os
+
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMBA_NUM_THREADS"):
+        os.environ[var] = "1"
+    try:
+        from threadpoolctl import threadpool_limits
+
+        threadpool_limits(1)
+    except ImportError:
+        pass
 
 
 def read_tags(path: str) -> dict[str, str]:
@@ -165,6 +196,7 @@ class Analysis:
     bpm: float | None = None
     bpm_confidence: float | None = None
     tags: dict[str, str] = field(default_factory=dict)
+    analysis_rev: int = ANALYSIS_REVISION
 
 
 @dataclass

@@ -29,21 +29,27 @@ query_template = "{query}"
 sample_rate = 48000
 segment_seconds = 10.0                # long files: up to max_segments windows this long, averaged
 max_segments = 3
+dimensions = 0                        # >0: ask the server to truncate embeddings (Matryoshka models)
 concurrency = 8
 text_batch_size = 64
 timeout = 120.0
 
-# Optional: a separate (text-only) model for matching the query against file/folder names and
-# tags. Omit to use [embedding]'s text encoder. Unset keys are inherited from [embedding].
-# [text_embedding]
-# base_url = "http://localhost:8001/v1"
-# model = "Qwen/Qwen3-Embedding-4B"
-# query_template = "Instruct: Given a description of a sound, find sound files whose names match it\nQuery: {query}"
+# A separate text-only model for matching queries against file/folder names and tags. Unset
+# keys are inherited from [embedding]. Remove this section to use CLAP's own text encoder (no
+# extra GPU memory, but see "Choosing models" in the README: precision@5 0.55 vs. 0.68 at audio_weight 0.4).
+# The bundled server hosts both: find-sound-embed-server --text-model Qwen/Qwen3-Embedding-4B
+# (or `find-sound doctor --fix`, which starts it with whatever this file asks for).
+[text_embedding]
+model = "Qwen/Qwen3-Embedding-4B"
+dimensions = 1024                     # Matryoshka truncation: same scores as the full 2560, 2.5x smaller
+text_batch_size = 32
+query_template = "Instruct: Given a description of a sound, retrieve sound files whose names and folders describe it\nQuery:{query}"
 
 [search]
 k = 5
-audio_weight = 0.65          # the two similarity channels are z-scored, then mixed with these weights
-text_weight = 0.35
+# The two similarity channels are z-scored, then mixed: audio_weight for the audio, the rest
+# for names/tags. 0.4 suits a dedicated text model; with CLAP's text encoder alone use ~0.65.
+audio_weight = 0.4
 group_variants = true        # collapse "Laser 001/002/..." into one result...
 variant_similarity = 0.75    # ...when their audio embeddings are at least this similar
 bpm_tolerance = 0.04         # "bpm:120" matches 115.2-124.8

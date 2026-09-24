@@ -97,16 +97,12 @@ async def _search(cfg: Config, args) -> int:
         store.close()
 
     if args.copy_to:
-        dest = Path(args.copy_to).expanduser()
+        dest = Path(args.copy_to).expanduser().resolve()
         dest.mkdir(parents=True, exist_ok=True)
         for r in results:
-            target = dest / Path(r.path).name
-            n = 1
-            while target.exists() and not target.samefile(r.path):
-                target = dest / f"{Path(r.path).stem}-{n}{Path(r.path).suffix}"
-                n += 1
-            shutil.copy2(r.path, target)
-            r.path = str(target)
+            r.source, r.path = r.path, _copy_into(r.path, dest)
+            if args.with_variants:
+                r.copied_variants = [_copy_into(v, dest) for v in r.variants]
 
     if args.json:
         print(results_json(results, filters, query))
@@ -116,7 +112,7 @@ async def _search(cfg: Config, args) -> int:
         for i, r in enumerate(results, 1):
             meta = [r.kind or "?", f"{r.duration:.1f}s" if r.duration is not None else "",
                     f"{r.bpm:g} bpm ({r.bpm_source})" if r.bpm else ""]
-            print(f"{i}. {r.path}")
+            print(f"{i}. {r.path}" + (f"  (from {r.source})" if r.source else ""))
             print(f"   {' · '.join(m for m in meta if m)} · score {r.score:.2f} "
                   f"(audio {r.audio_similarity:.3f}, text {r.text_similarity:.3f})")
             print(f"   {r.description}")
@@ -129,6 +125,17 @@ async def _search(cfg: Config, args) -> int:
         print("no matches" + (f" for filters: {filters.describe()}" if filters.describe() else ""), file=sys.stderr)
         return 1
     return 0
+
+
+def _copy_into(src: str, dest: Path) -> str:
+    """Copy src into dest, keeping its name unless a different file already has it."""
+    target = dest / Path(src).name
+    n = 1
+    while target.exists() and not target.samefile(src):
+        target = dest / f"{Path(src).stem}-{n}{Path(src).suffix}"
+        n += 1
+    shutil.copy2(src, target)
+    return str(target)
 
 
 def _stats(cfg: Config, as_json: bool) -> None:
@@ -168,6 +175,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--audio-weight", type=float, help="0..1 weight of audio vs. name/tag similarity")
     p.add_argument("--no-group", action="store_true", help="don't collapse numbered/lettered variants")
     p.add_argument("--copy-to", metavar="DIR", help="copy the results into DIR and print the copies' paths")
+    p.add_argument("--with-variants", action="store_true", help="with --copy-to: copy each result's variants too")
     out = p.add_mutually_exclusive_group()
     out.add_argument("--json", action="store_true", help="JSON with scores, metadata and variants")
     out.add_argument("-l", "--long", action="store_true", help="human-readable details")
@@ -181,6 +189,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--json", action="store_true")
 
     sub.add_parser("config", help="print the effective configuration")
+
+    p = sub.add_parser("doctor", help="check config, library, embedding endpoints and index")
+    p.add_argument("--fix", action="store_true",
+                   help="start the bundled embedding server if a local endpoint is down, then update the index")
+
+    p = sub.add_parser("eval", help="measure retrieval quality on a cases file (see evals/)")
+    p.add_argument("cases", help="TOML file of [[case]] query/match entries")
+    p.add_argument("--weights", help="comma-separated audio weights to try (default 1,0.8,0.65,0.5,0.35,0.2,0)")
+    p.add_argument("-v", "--per-case", action="store_true", help="show each query's result")
+    p.add_argument("--json", action="store_true")
 
     args = ap.parse_args(argv)
     logging.basicConfig(
@@ -205,6 +223,18 @@ def main(argv: list[str] | None = None) -> None:
                         log_level="warning")
         elif args.cmd == "stats":
             _stats(cfg, args.json)
+        elif args.cmd == "doctor":
+            from .doctor import run as doctor
+
+            sys.exit(asyncio.run(doctor(cfg, fix=args.fix)))
+        elif args.cmd == "eval":
+            from .evaluate import DEFAULT_WEIGHTS, evaluate, format_report, load_cases
+
+            weights = tuple(float(w) for w in args.weights.split(",")) if args.weights else DEFAULT_WEIGHTS
+            weights = tuple(sorted(set(weights) | {cfg.search.audio_weight}, reverse=True))
+            result = asyncio.run(evaluate(cfg, load_cases(args.cases), weights))
+            print(json.dumps(result, indent=2, default=str) if args.json
+                  else format_report(result, cfg.search.audio_weight, args.per_case))
         elif args.cmd == "config":
             d = asdict(cfg)
             print(json.dumps(d, indent=2, default=str))

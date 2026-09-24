@@ -1,8 +1,10 @@
-"""Reference embedding server: a CLAP model behind an OpenAI-compatible /embeddings endpoint.
+"""Reference embedding server: CLAP (audio + text) and optionally a text-only embedding model
+behind one OpenAI-compatible /embeddings endpoint, routed by the request's `model` field.
 
 Use it when no audio-capable embedding server is running already. It needs the `server` extra:
 
-    uv run --extra server find-sound-embed-server --model laion/larger_clap_general --port 7997
+    uv run --extra server find-sound-embed-server --port 7997 \\
+        --clap-model laion/larger_clap_general --text-model Qwen/Qwen3-Embedding-4B
 
 Request shapes it accepts (all return the standard OpenAI embeddings response):
 
@@ -11,6 +13,9 @@ Request shapes it accepts (all return the standard OpenAI embeddings response):
     {"messages": [{"role": "user", "content": [part]}]}                  one item, vLLM chat style, where
         part is {"type": "text"}, {"type": "input_audio", "input_audio": {"data": b64}} or
         {"type": "audio_url", "audio_url": {"url": "data:..."}}
+
+`dimensions` truncates text-model embeddings (Matryoshka-trained models such as Qwen3-Embedding
+keep most of their quality at 512-1024 dims).
 """
 
 from __future__ import annotations
@@ -31,13 +36,21 @@ from fastapi.responses import JSONResponse
 log = logging.getLogger("find_sound.embed_server")
 
 
+def _device(torch, device: str) -> str:
+    return ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
+
+
 class ClapEmbedder:
+    """Audio and text in one space."""
+
+    audio = True
+
     def __init__(self, model_id: str, device: str = "auto"):
         import torch
         from transformers import AutoFeatureExtractor, AutoTokenizer, ClapModel
 
         self.torch = torch
-        self.device = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
+        self.device = _device(torch, device)
         self.model_id = model_id
         self.model = ClapModel.from_pretrained(model_id).to(self.device).eval()
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -68,6 +81,37 @@ class ClapEmbedder:
         return x if sr == self.sample_rate else soxr.resample(x, sr, self.sample_rate).astype(np.float32)
 
 
+class DecoderTextEmbedder:
+    """Decoder-LM embedding models pooled on the final token (Qwen3-Embedding and relatives).
+
+    The tokenizer appends the end-of-text token and pads on the left, so position -1 is the
+    pooled token for every row. Instructions for queries are the client's job (query_template).
+    """
+
+    audio = False
+
+    def __init__(self, model_id: str, device: str = "auto", max_length: int = 512):
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+
+        self.torch = torch
+        self.device = _device(torch, device)
+        self.model_id = model_id
+        self.max_length = max_length
+        dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+        self.model = AutoModel.from_pretrained(model_id, dtype=dtype).to(self.device).eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side="left")
+        self._lock = threading.Lock()
+
+    def embed_text(self, texts: list[str]) -> np.ndarray:
+        batch = self.tokenizer(
+            texts, padding=True, truncation=True, max_length=self.max_length, return_tensors="pt"
+        ).to(self.device)
+        with self._lock, self.torch.inference_mode():
+            hidden = self.model(**batch).last_hidden_state
+        return hidden[:, -1].float().cpu().numpy()
+
+
 def _data_uri_bytes(uri: str) -> bytes:
     if not uri.startswith("data:") or "," not in uri:
         raise HTTPException(400, "audio inputs must be base64 data URIs (data:audio/wav;base64,...)")
@@ -77,19 +121,40 @@ def _data_uri_bytes(uri: str) -> bytes:
     return base64.b64decode(payload)
 
 
-def create_app(embedder: ClapEmbedder, served_name: str | None = None) -> FastAPI:
-    app = FastAPI(title="find-sound CLAP embedding server")
-    name = served_name or embedder.model_id
+def _normalize(v: np.ndarray) -> np.ndarray:
+    return v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
 
-    def respond(vecs: np.ndarray, n_tokens: int = 0) -> JSONResponse:
+
+def create_app(embedders: dict[str, object]) -> FastAPI:
+    """`embedders` maps the served model name to a ClapEmbedder / DecoderTextEmbedder."""
+    app = FastAPI(title="find-sound embedding server")
+    default = next(iter(embedders))
+
+    def pick(name: str | None):
+        if name in embedders:
+            return name, embedders[name]
+        if len(embedders) == 1 or name in (None, "", "default/not-specified"):
+            return default, embedders[default]
+        raise HTTPException(404, f"model {name!r} is not served here; available: {', '.join(embedders)}")
+
+    def respond(name: str, vecs: np.ndarray, dimensions: int | None = None) -> JSONResponse:
+        if dimensions:
+            vecs = vecs[:, :dimensions]
+        vecs = _normalize(vecs)
         return JSONResponse({
             "object": "list",
             "model": name,
             "data": [{"object": "embedding", "index": i, "embedding": v.tolist()} for i, v in enumerate(vecs)],
-            "usage": {"prompt_tokens": n_tokens, "total_tokens": n_tokens},
+            "usage": {"prompt_tokens": 0, "total_tokens": 0},
         })
 
+    def needs_audio(name: str, emb) -> None:
+        if not emb.audio:
+            raise HTTPException(400, f"model {name!r} embeds text only")
+
     def embed(body: dict):
+        name, emb = pick(body.get("model"))
+        dims = body.get("dimensions") or None
         if "messages" in body:
             texts, clips = [], []
             for msg in body["messages"]:
@@ -105,14 +170,15 @@ def create_app(embedder: ClapEmbedder, served_name: str | None = None) -> FastAP
                     else:
                         raise HTTPException(400, f"unsupported content part type {t!r}")
             if clips and texts:
-                raise HTTPException(400, "CLAP embeds text or audio, not both in one item")
+                raise HTTPException(400, "text and audio cannot be mixed in one item")
             if clips:
-                vec = embedder.embed_audio([embedder.decode(c) for c in clips]).mean(axis=0, keepdims=True)
+                needs_audio(name, emb)
+                vec = _normalize(emb.embed_audio([emb.decode(c) for c in clips])).mean(axis=0, keepdims=True)
             elif texts:
-                vec = embedder.embed_text([" ".join(texts)])
+                vec = emb.embed_text([" ".join(texts)])
             else:
                 raise HTTPException(400, "empty messages")
-            return respond(vec / np.linalg.norm(vec, axis=1, keepdims=True))
+            return respond(name, vec, dims)
 
         items = body.get("input")
         if isinstance(items, str):
@@ -121,10 +187,12 @@ def create_app(embedder: ClapEmbedder, served_name: str | None = None) -> FastAP
             raise HTTPException(400, "`input` must be a string or a non-empty list")
         modality = body.get("modality", "text")
         if modality == "text":
-            return respond(np.concatenate([embedder.embed_text(items[i : i + 64]) for i in range(0, len(items), 64)]))
+            vecs = np.concatenate([emb.embed_text(items[i : i + 64]) for i in range(0, len(items), 64)])
+            return respond(name, vecs, dims)
         if modality == "audio":
-            clips = [embedder.decode(_data_uri_bytes(u)) for u in items]
-            return respond(np.concatenate([embedder.embed_audio(clips[i : i + 32]) for i in range(0, len(clips), 32)]))
+            needs_audio(name, emb)
+            clips = [emb.decode(_data_uri_bytes(u)) for u in items]
+            return respond(name, np.concatenate([emb.embed_audio(clips[i : i + 32]) for i in range(0, len(clips), 32)]), dims)
         raise HTTPException(400, f"unsupported modality {modality!r}")
 
     # Plain `def` endpoints run in FastAPI's thread pool, keeping the event loop free.
@@ -144,19 +212,24 @@ def create_app(embedder: ClapEmbedder, served_name: str | None = None) -> FastAP
     @app.get("/models")
     @app.get("/v1/models")
     def models():
-        return {"object": "list", "data": [{"id": name, "object": "model", "owned_by": "find-sound"}]}
+        return {"object": "list", "data": [{"id": n, "object": "model", "owned_by": "find-sound"} for n in embedders]}
 
     @app.get("/health")
     def health():
-        return {"ok": True, "model": name, "device": embedder.device, "sample_rate": embedder.sample_rate}
+        return {
+            "ok": True,
+            "models": {n: {"device": e.device, "audio": e.audio} for n, e in embedders.items()},
+        }
 
     return app
 
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--model", default="laion/larger_clap_general", help="Hugging Face CLAP model id")
-    ap.add_argument("--served-name", help="model name reported in responses (default: --model)")
+    ap.add_argument("--clap-model", "--model", dest="clap_model", default="laion/larger_clap_general",
+                    help="Hugging Face CLAP model id for audio + text ('none' to skip)")
+    ap.add_argument("--text-model", action="append", default=[],
+                    help="text-only embedding model (e.g. Qwen/Qwen3-Embedding-4B); repeatable")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7997)
     ap.add_argument("--device", default="auto", help="cuda, cpu or auto")
@@ -165,10 +238,17 @@ def main(argv: list[str] | None = None) -> None:
 
     import uvicorn
 
-    log.info("loading %s", args.model)
-    embedder = ClapEmbedder(args.model, args.device)
-    log.info("loaded on %s, sample rate %d", embedder.device, embedder.sample_rate)
-    uvicorn.run(create_app(embedder, args.served_name), host=args.host, port=args.port, log_level="warning")
+    embedders: dict[str, object] = {}
+    if args.clap_model.lower() != "none":
+        log.info("loading %s", args.clap_model)
+        embedders[args.clap_model] = ClapEmbedder(args.clap_model, args.device)
+    for m in args.text_model:
+        log.info("loading %s", m)
+        embedders[m] = DecoderTextEmbedder(m, args.device)
+    if not embedders:
+        ap.error("nothing to serve")
+    log.info("serving %s on %s:%d", ", ".join(embedders), args.host, args.port)
+    uvicorn.run(create_app(embedders), host=args.host, port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":

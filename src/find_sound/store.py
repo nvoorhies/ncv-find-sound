@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS content (
     hash TEXT PRIMARY KEY,
     duration REAL, sample_rate INTEGER, channels INTEGER, rms_db REAL, peak_db REAL,
-    bpm REAL, bpm_confidence REAL, tags TEXT
+    bpm REAL, bpm_confidence REAL, tags TEXT, analysis_rev INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -71,6 +71,14 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(content)")}
+        if "analysis_rev" not in cols:
+            # Indexes built before analysis revisions existed hold revision-1 results.
+            self.db.execute("ALTER TABLE content ADD COLUMN analysis_rev INTEGER NOT NULL DEFAULT 1")
+            self.db.commit()
 
     def close(self) -> None:
         self.db.close()
@@ -115,7 +123,8 @@ class Store:
         return self.db.execute("SELECT * FROM content WHERE hash=?", (content_hash,)).fetchone()
 
     def put_content(self, content_hash: str, a: Analysis) -> None:
-        d = asdict(a)
+        # numpy scalars would be stored as BLOBs (sqlite3 takes anything with a buffer).
+        d = {k: v.item() if isinstance(v, np.generic) else v for k, v in asdict(a).items()}
         d["tags"] = json.dumps(d["tags"])
         cols = ["hash", *d]
         self.db.execute(

@@ -115,9 +115,12 @@ class Result:
     description: str
     variants: list[str] = field(default_factory=list)
     duplicates: list[str] = field(default_factory=list)
+    # Set by `search --copy-to`: where the file came from (path then points at the copy).
+    source: str | None = None
+    copied_variants: list[str] | None = None
 
     def to_dict(self) -> dict:
-        d = self.__dict__.copy()
+        d = {k: v for k, v in self.__dict__.items() if v is not None or k not in ("source", "copied_variants")}
         for k in ("score", "audio_similarity", "text_similarity"):
             d[k] = round(d[k], 4)
         return d
@@ -284,13 +287,18 @@ async def run_search(
         f.bpm = extra.bpm or f.bpm
         f.duration = extra.duration or f.duration
         f.path += extra.path
-    audio_q = text_q = None
-    if text:
-        if text_client is audio_client and text_client.ep.query_template == audio_client.ep.query_template:
-            audio_q = text_q = await audio_client.embed_query(text)
-        else:
-            audio_q, text_q = await asyncio.gather(audio_client.embed_query(text), text_client.embed_query(text))
+    audio_q, text_q = await embed_query(audio_client, text_client, text)
     return index.rank(audio_q, text_q, f, cfg, k=k, group_variants=group_variants), f
+
+
+async def embed_query(audio_client, text_client, text: str) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Query vectors for the audio channel and the name/tag channel (one call if they share a model)."""
+    if not text:
+        return None, None
+    if text_client is audio_client:
+        q = await audio_client.embed_query(text)
+        return q, q
+    return tuple(await asyncio.gather(audio_client.embed_query(text), text_client.embed_query(text)))
 
 
 def results_json(results: list[Result], filters: Filters, query: str) -> str:

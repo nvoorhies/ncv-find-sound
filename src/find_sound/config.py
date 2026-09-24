@@ -37,6 +37,8 @@ class EndpointConfig:
     # Long files are embedded as up to max_segments windows of segment_seconds, averaged.
     segment_seconds: float = 10.0
     max_segments: int = 3
+    # Truncate embeddings to this many dimensions (Matryoshka models); sent as `dimensions`.
+    dimensions: int | None = None
     concurrency: int = 8
     text_batch_size: int = 64
     timeout: float = 120.0
@@ -50,12 +52,16 @@ class EndpointConfig:
         """Cache key for audio vectors: anything that changes the vector is part of it."""
         return (
             f"{self.model}|{self.audio_format}|sr{self.sample_rate}"
-            f"|seg{self.segment_seconds:g}x{self.max_segments}"
+            f"|seg{self.segment_seconds:g}x{self.max_segments}{self._dims_suffix}"
         )
 
     @property
     def text_model_key(self) -> str:
-        return f"{self.model}|text"
+        return f"{self.model}|text{self._dims_suffix}"
+
+    @property
+    def _dims_suffix(self) -> str:
+        return f"|d{self.dimensions}" if self.dimensions else ""
 
 
 @dataclass(frozen=True)
@@ -64,13 +70,17 @@ class SearchConfig:
     # Weights of the two similarity channels after each is z-scored across the library:
     # query vs. the audio itself, and query vs. a description built from path + tags.
     audio_weight: float = 0.65
-    text_weight: float = 0.35
+    text_weight: float | None = None  # default: 1 - audio_weight
     # Collapse "Laser 001", "Laser 002", ... into one result with variants, when their audio
     # embeddings are at least this similar (numbered files can also be unrelated sounds).
     group_variants: bool = True
     variant_similarity: float = 0.75
     # Relative tolerance for a single-value BPM filter ("bpm:120" matches 115.2-124.8).
     bpm_tolerance: float = 0.04
+
+    def __post_init__(self):
+        if self.text_weight is None:
+            object.__setattr__(self, "text_weight", 1.0 - self.audio_weight)
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run find-sound from this checkout's uv environment, from any directory. The `server` extra is
+# included so `find-sound doctor --fix` can start the bundled embedding server.
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec uv run --quiet --project "$HERE/.." --extra server find-sound "$@"

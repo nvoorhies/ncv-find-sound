@@ -24,7 +24,7 @@ from functools import partial
 
 import numpy as np
 
-from .audio import analyze_file, hash_file
+from .audio import ANALYSIS_REVISION, analyze_file, hash_file, init_worker
 from .config import Config
 from .describe import KIND_PROMPTS, classify_audio, describe, kind_from_path, kind_rules_version
 from .embed_client import EmbeddingClient, EmbeddingError, normalize
@@ -119,7 +119,9 @@ class Indexer:
     @property
     def executor(self) -> Executor:
         if self._executor is None:
-            self._executor = ProcessPoolExecutor(self.cfg.workers, mp_context=multiprocessing.get_context("spawn"))
+            self._executor = ProcessPoolExecutor(
+                self.cfg.workers, mp_context=multiprocessing.get_context("spawn"), initializer=init_worker
+            )
         return self._executor
 
     def close(self) -> None:
@@ -190,6 +192,13 @@ class Indexer:
             report.removed = len(removed)
 
         missing = self.store.paths_missing_vectors(self.audio_model, self.text_model)
+        # Analysis improved since this content was analysed. Only clips long enough for a tempo
+        # change results; the rest just get their revision bumped.
+        self.store.db.execute(
+            "UPDATE content SET analysis_rev = ? WHERE analysis_rev < ? AND duration < ?",
+            (ANALYSIS_REVISION, ANALYSIS_REVISION, self.cfg.bpm_min_seconds),
+        )
+        stale = {r[0] for r in self.store.db.execute("SELECT hash FROM content WHERE analysis_rev < ?", (ANALYSIS_REVISION,))}
         todo = []
         for path, (root, size, mtime) in sorted(present.items()):
             row = known.get(path)
@@ -197,6 +206,7 @@ class Indexer:
                 todo.append((path, root, size, mtime, None))
             elif row["error"] is None and (
                 path in missing
+                or row["hash"] in stale
                 # Description rules changed since this file was indexed: refresh the text side.
                 or row["description"] != describe(path, root, json.loads(row["tags"] or "{}"))
             ):
@@ -337,7 +347,8 @@ class Indexer:
             if (fut := self._inflight.get(h)) is not None:
                 await asyncio.shield(fut)
             need_vec = not store.has_vector(akey, self.audio_model)
-            if content is None or need_vec:
+            need_analysis = content is None or content["analysis_rev"] < ANALYSIS_REVISION
+            if need_analysis or need_vec:
                 fut = self._inflight[h] = loop.create_future()
                 try:
                     prepared = await loop.run_in_executor(
@@ -346,7 +357,7 @@ class Indexer:
                             analyze_file, path,
                             sample_rate=ep.sample_rate, segment_seconds=ep.segment_seconds,
                             max_segments=ep.max_segments, bpm_min_seconds=self.cfg.bpm_min_seconds,
-                            want_analysis=content is None, want_segments=need_vec,
+                            want_analysis=need_analysis, want_segments=need_vec,
                         ),
                     )
                     if prepared.analysis:
@@ -356,6 +367,8 @@ class Indexer:
                         vecs = await self._embed(self.audio.embed_audio(prepared.segments))
                         store.put_vector(akey, self.audio_model, normalize(vecs.mean(axis=0)))
                         report.audio_embedded += 1
+                    else:
+                        report.audio_reused += 1
                 finally:
                     del self._inflight[h]
                     fut.set_result(None)

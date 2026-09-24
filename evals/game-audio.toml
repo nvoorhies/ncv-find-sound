@@ -1,0 +1,150 @@
+# Retrieval eval cases for a general game-audio library: `find-sound eval evals/game-audio.toml`.
+#
+# Each query is phrased the way you'd ask for a sound, mostly avoiding the words the files are
+# named with. A result counts as relevant when its path matches every regex in `match`
+# (case-insensitive). Cases with few relevant files in your library are flagged in the report;
+# edit or drop them to suit your own collection.
+
+[[case]]
+query = "blade clash"
+match = ["sword|blade|dagger|knife|katana|sabre|saber", "hit|clash|impact|parry|clang|block"]
+
+[[case]]
+query = "soldier barking commands in battle"
+match = ["yell|shout|callout|command|order|battle|charge|attack"]
+
+[[case]]
+query = "jingling pocket change"
+match = ["coin|money|cash|change"]
+
+[[case]]
+query = "someone walking"
+match = ["foot|step|walk"]
+
+[[case]]
+query = "window pane shattering"
+match = ["glass|window", "break|shatter|smash|crash"]
+
+[[case]]
+query = "thunder crack from a storm"
+match = ["thunder|lightning|storm"]
+
+[[case]]
+query = "wizard casting a spell"
+match = ["magic|spell|cast|arcane|enchant|sorcer|wizard"]
+
+[[case]]
+query = "menu confirm blip"
+match = ["ui|click|select|confirm|button|menu|toggle|interface|navigat"]
+
+[[case]]
+query = "huge detonation"
+match = ["explo|blast|bomb|boom|detonat|grenade|mine|rocket"]
+
+[[case]]
+query = "hound barking"
+match = ["dog|bark|canine|hound|wolf"]
+
+[[case]]
+query = "splashing into a pond"
+match = ["splash|water|pond|lake|swim|dive"]
+
+[[case]]
+query = "campfire crackling"
+match = ["fire|burn|flame|crackl|torch|ember"]
+
+[[case]]
+query = "reloading a firearm"
+match = ["reload|magazine|mag |clip|chamber|cock|bolt|slide", "gun|rifle|pistol|revolver|shotgun|smg|weapon|firearm"]
+
+[[case]]
+query = "car motor revving"
+match = ["engine|car|vehicle|motor|rev"]
+
+[[case]]
+query = "rapping on a wooden door"
+match = ["knock"]
+
+[[case]]
+query = "undead moaning"
+match = ["zombie|undead|ghoul|groan|moan"]
+
+[[case]]
+query = "loosing an arrow"
+match = ["arrow|bow|crossbow"]
+
+[[case]]
+query = "victory fanfare"
+match = ["win|victory|success|fanfare|triumph|level|reward|achievement|complete"]
+
+[[case]]
+query = "defeat sting when the player dies"
+match = ["lose|los[st]|fail|death|die|defeat|game ?over"]
+
+[[case]]
+query = "heavy downpour"
+match = ["rain|storm|downpour"]
+
+[[case]]
+query = "gusts of wind"
+match = ["wind|gust|breeze|blizzard"]
+
+[[case]]
+query = "songbirds in the morning"
+match = ["bird|chirp|tweet|song ?bird|dawn"]
+
+[[case]]
+query = "creepy music for a haunted house"
+match = ["music", "horror|spooky|creepy|scary|dark|haunt|dread|tension"]
+
+[[case]]
+query = "smooth saxophone lounge music"
+match = ["jazz|lounge|sax"]
+
+[[case]]
+query = "retro 8-bit video game tune"
+match = ["music|tune|song|theme", "8.?bit|chip|retro|pixel|arcade"]
+
+[[case]]
+query = "robot speaking in a synthetic voice"
+match = ["robot|android|mech|cyborg|synth|droid|machine"]
+
+[[case]]
+query = "fist hitting a face"
+match = ["punch|fist|hit|slap|body|impact|smack"]
+
+[[case]]
+query = "chewing food"
+match = ["eat|chew|bite|munch|crunch|food|swallow"]
+
+[[case]]
+query = "clicking away on a computer keyboard"
+match = ["typ|keyboard|keys|computer"]
+
+[[case]]
+query = "stadium audience cheering"
+match = ["crowd|cheer|applause|audience|stadium"]
+
+[[case]]
+query = "sci-fi blaster shot"
+match = ["laser|blaster|zap|plasma|pew|beam|energy"]
+
+[[case]]
+query = "opening a treasure chest"
+match = ["chest|box|lid|crate|coffer", "open"]
+
+[[case]]
+query = "pouring a drink into a glass"
+match = ["pour|liquid|drink|glass|bottle"]
+
+[[case]]
+query = "monster roar"
+match = ["monster|beast|creature|roar|growl|dragon|troll|ogre"]
+
+[[case]]
+query = "spaceship interior hum"
+match = ["ship|space|sci|hum|drone|engine|reactor"]
+
+[[case]]
+query = "epic battle music with orchestra"
+match = ["music", "epic|battle|orchestr|war|combat|fight|action|heroic"]
