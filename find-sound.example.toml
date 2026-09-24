@@ -1,0 +1,49 @@
+# find-sound configuration. Copy to ./find-sound.toml or ~/.config/find-sound/config.toml.
+# Every key is optional; defaults are shown.
+
+# Directories to index (searched recursively). Also settable as FIND_SOUND_LIBRARY=dir1:dir2.
+library = ["~/sounds"]
+
+# Where the SQLite index (vectors + metadata) lives.
+index_path = "~/.cache/find-sound/index.sqlite"
+
+# Seconds between rescans in `watch` / `serve`.
+scan_interval = 300
+
+# Files modified more recently than this are left for the next scan (they may still be copying).
+settle_seconds = 2.0
+
+# Decoding/analysis processes; 0 = min(8, cpu count).
+analysis_workers = 0
+
+# BPM is only estimated for clips at least this long.
+bpm_min_seconds = 6.0
+
+# The multimodal (audio + text) embedding model. Queries and audio are embedded here.
+[embedding]
+base_url = "http://localhost:7997"    # POST {base_url}/embeddings; include /v1 if your server needs it
+model = "laion/larger_clap_general"
+api_key_env = "FIND_SOUND_API_KEY"    # env var holding the key, if the server wants one
+audio_format = "infinity"             # "infinity" | "messages" (input_audio parts) | "messages-url" (audio_url parts)
+query_template = "{query}"
+sample_rate = 48000
+segment_seconds = 10.0                # long files: up to max_segments windows this long, averaged
+max_segments = 3
+concurrency = 8
+text_batch_size = 64
+timeout = 120.0
+
+# Optional: a separate (text-only) model for matching the query against file/folder names and
+# tags. Omit to use [embedding]'s text encoder. Unset keys are inherited from [embedding].
+# [text_embedding]
+# base_url = "http://localhost:8001/v1"
+# model = "Qwen/Qwen3-Embedding-4B"
+# query_template = "Instruct: Given a description of a sound, find sound files whose names match it\nQuery: {query}"
+
+[search]
+k = 5
+audio_weight = 0.65          # the two similarity channels are z-scored, then mixed with these weights
+text_weight = 0.35
+group_variants = true        # collapse "Laser 001/002/..." into one result...
+variant_similarity = 0.75    # ...when their audio embeddings are at least this similar
+bpm_tolerance = 0.04         # "bpm:120" matches 115.2-124.8
