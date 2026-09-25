@@ -93,3 +93,4 @@ def test_service_unit_runs_serve_with_this_config(cfg, tmp_path):
     assert exec_line.endswith("serve --host 127.0.0.1 --port 8765")
     assert f'-c "{tmp_path / "my config.toml"}"' in exec_line
     assert "Environment=PATH=" in unit and "WantedBy=default.target" in unit
+    assert "SuccessExitStatus=143" in unit  # a stop via SIGTERM is not a failure

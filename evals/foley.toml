@@ -1,0 +1,42 @@
+# Everyday foley and field-recording queries: `find-sound eval evals/foley.toml`.
+# Same format as game-audio.toml: a result is relevant when its path matches every regex.
+
+[[case]]
+query = "sizzling food in a frying pan"
+match = ["fry|sizzl"]
+
+[[case]]
+query = "hanging clothes on a rack"
+match = ["hanger|cloth|jacket|coat|garment|wardrobe|closet"]
+
+[[case]]
+query = "putting a book down on a shelf"
+match = ["book|magazine|shelf"]
+
+[[case]]
+query = "old printer printing a page"
+match = ["print"]
+
+[[case]]
+query = "hot spring erupting"
+match = ["geyser|erupt|spout|steam|hot ?spring"]
+
+[[case]]
+query = "seabirds calling at a colony"
+match = ["bird|gull|cormorant|seabird|tern|puffin"]
+
+[[case]]
+query = "chopping through a block of ice"
+match = ["ice", "chop|axe|hack|break|crack|hit|smash|saw|stab"]
+
+[[case]]
+query = "busy restaurant chatter"
+match = ["restaurant|dining|cafe|diner|market|canteen|bar |pub"]
+
+[[case]]
+query = "typing on a mechanical typewriter"
+match = ["typewriter|typing|keyboard"]
+
+[[case]]
+query = "unlocking a door with a key"
+match = ["lock|key"]

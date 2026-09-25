@@ -84,7 +84,8 @@ while the median same-name group sits at 0.83.
 
 ## Choosing models
 
-`find-sound eval evals/game-audio.toml` runs 36 game-audio queries phrased the way you'd ask,
+`find-sound eval evals/game-audio.toml` (and `evals/foley.toml`, 10 everyday-foley queries) measures retrieval.
+The game-audio set runs 36 queries phrased the way you'd ask,
 mostly in words the files don't use ("blade clash", "jingling pocket change", "rapping on a
 wooden door"). Relevance is judged by path regexes. Results on the 8.8k-file library this was
 built on, with CLAP (`laion/larger_clap_general`) always doing the audio:

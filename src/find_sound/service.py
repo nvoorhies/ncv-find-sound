@@ -47,6 +47,9 @@ Environment=PATH={path}
 ExecStart={" ".join(_quote(c) for c in cmd)}
 Restart=on-failure
 RestartSec=30
+# On stop, systemd sends SIGTERM to every process in the unit. Python shuts down cleanly, but
+# the `uv run` wrapper (the main PID) exits with 128+15; that is a normal stop, not a failure.
+SuccessExitStatus=143
 # Indexing bursts use several cores; stay out of the way of interactive work.
 Nice=10
 IOSchedulingClass=idle
